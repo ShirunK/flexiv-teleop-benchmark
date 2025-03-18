@@ -28,7 +28,7 @@ import csv
 import signal
 import subprocess
 from datetime import datetime
-
+import argparse
 import flexivrdk
 
 # ========== 全局变量 ==========
@@ -36,8 +36,8 @@ teleop_pid = None            # Teleop 主进程PID
 teleop_pattern = None        # Teleop 可执行文件名(去掉路径)，供 pkill -f
 
 # 机器人序列号
-leader_robot_sn   = "Rizon4s-062304"
-follower_robot_sn = "Rizon4s-062242"
+leader_robot_sn   = None
+follower_robot_sn = None
 
 # 末端目标位移 (米)
 finalDistM = 0.30
@@ -45,7 +45,7 @@ startDist  = 0.05
 sample_period = 0.01
 
 # sudo 密码
-SUDO_PASSWORD = ""
+SUDO_PASSWORD = None
 
 # =========== 各方向起始关节姿态 (单位:度) ===========
 POSE_X1_START = [-0.7858643304937192, -13.877941212036967, 0.7483301998416312,
@@ -279,8 +279,17 @@ signal.signal(signal.SIGINT, signal_handler)
 # =========== 主程序 ===========
 
 def main():
-    global teleop_pid
+    global teleop_pid, leader_robot_sn, follower_robot_sn, SUDO_PASSWORD
 
+    parser = argparse.ArgumentParser(description="Transparency Measurement for Master Force Feedback")
+    parser.add_argument("-1", "--leader", required=True, help="主机械臂序列号")
+    parser.add_argument("-2", "--follower", required=True, help="从机械臂序列号")
+    parser.add_argument("-p", "--password", required=True, help="用于启动和停止 Teleop 程序的 sudo 密码")
+    args = parser.parse_args()
+
+    leader_robot_sn = args.leader
+    follower_robot_sn = args.follower
+    SUDO_PASSWORD = args.password
     # 1) 找test_开头可执行文件
     exe_list = find_executables_in_current_dir()
     if not exe_list:

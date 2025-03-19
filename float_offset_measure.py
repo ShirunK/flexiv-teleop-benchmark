@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+float_offset_measure.py
+
+功能：
+1. 通过命令行参数 (-1, -2, -p, -n) 获取主/从机械臂序列号、sudo 密码（用于启动和停止 Teleop 程序），以及测试次数（默认10次）。
+   需要 sudo 密码的原因：启动和停止 Teleop 程序时必须以 root 权限执行 kill 命令，以确保彻底终止 Teleop 及其所有子进程。
+2. 从当前目录列出所有以 "test_" 开头的可执行文件，由用户选择后启动遥操作程序（只启动一次）。
+3. 同步主从机械臂到 Home Pose，然后等待用户按 Enter 开始测试。
+4. 连续进行 n 次测试：每次提示“请将机械臂移动到测试 Pose 后按 Enter 开始第 N 次测试”，踩下踏板后记录 1 秒前后 TCP 位移（mm），并判断 <10mm 为成功。
+5. 输出每次位移、成功/失败；最后计算成功率和平均位移，保存所有结果到 CSV。
+6. 程序结束时停止遥操作程序，并优雅退出。
+
+"""
+
+import argparse, time, signal, sys, csv, os, subprocess
+from datetime import datetime
+import flexivrdk
+
+teleop_pid = None
+teleop_pattern = None
+
+HOME_POSE = [-5.6850536735238373e-05, -39.999988598597405, -7.796941005345694e-05,
+             89.99967467229428, -1.394160247868911e-05, 39.99993054198945, -1.9290991341998603e-06]
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Float Offset (Hover) Success Rate Measurement")
+    p.add_argument("-1","--leader", required=True, help="主机械臂序列号")
+    p.add_argument("-2","--follower", required=True, help="从机械臂序列号")
+    p.add_argument("-p","--password", required=True, help="sudo 密码，用以开启关闭遥操作")
+    p.add_argument("-n","--num", type=int, default=10, help="测试次数 (默认10次)")
+    return p.parse_args()
+
+def find_executables():
+    return [(f,f"./{f}") for f in os.listdir('.') if f.startswith("test_") and os.access(f,os.X_OK)]
+
+def start_teleop(executable_path):
+    """
+    启动 Teleop 程序，并使其成为新会话的组长。
+    若文件名包含 "high_transparency"，则使用 -l / -r 参数，否则使用 -1 / -2 参数。
+    返回 Teleop 进程的 PID。
+    """
+    global teleop_pid, teleop_pattern, SUDO_PASSWORD, leader_robot_sn, follower_robot_sn
+    teleop_pattern = os.path.basename(executable_path)
+    if "high_transparency" in teleop_pattern:
+        cmd = f"echo {SUDO_PASSWORD} | sudo -S {executable_path} -l {leader_robot_sn} -r {follower_robot_sn}"
+    else:
+        cmd = f"echo {SUDO_PASSWORD} | sudo -S {executable_path} -1 {leader_robot_sn} -2 {follower_robot_sn}"
+    pid = subprocess.Popen(cmd, shell=True, preexec_fn=os.setsid).pid
+    teleop_pid = pid
+    print(f"[StartTeleop] pattern=({teleop_pattern}), cmd=({cmd}), pid={pid}")
+    time.sleep(2.0)
+    return pid
+
+def stop_teleop():
+    """
+    结束 Teleop 程序：先通过 killpg(SIGTERM+SIGKILL) 结束进程组，
+    然后使用 pkill -9 -f 以确保所有相关进程被关闭。
+    """
+    global teleop_pid, teleop_pattern
+    if teleop_pid is not None and teleop_pid > 0:
+        try:
+            pgid = os.getpgid(teleop_pid)
+        except ProcessLookupError:
+            print(f"[stop_teleop] pid {teleop_pid} not found. Possibly ended.")
+            pgid = None
+        if pgid is not None:
+            print(f"[stop_teleop] killpg(SIGTERM) pgid={pgid}")
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+                time.sleep(1.0)
+            except ProcessLookupError:
+                print("[stop_teleop] Group not found, likely ended.")
+            else:
+                try:
+                    os.killpg(pgid, 0)
+                    print(f"[stop_teleop] Still alive => killpg(SIGKILL) pgid={pgid}")
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    print("[stop_teleop] Group ended after SIGTERM.")
+        teleop_pid = None
+    if teleop_pattern:
+        print(f"[stop_teleop] pkill -9 -f {teleop_pattern}")
+        try:
+            subprocess.run(["pkill", "-9", "-f", teleop_pattern], check=False)
+        except Exception as e:
+            print(f"[stop_teleop] pkill error: {e}")
+    teleop_pattern = None
+
+def sync_home(robot):
+    robot.SwitchMode(flexivrdk.Mode.NRT_PRIMITIVE_EXECUTION)
+    robot.ExecutePrimitive("MoveJ", {"target": flexivrdk.JPos(HOME_POSE,[0]*6)})
+    time.sleep(2)
+
+def measure_hover(robot):
+    start = robot.states().tcp_pose.copy()
+    time.sleep(1)
+    end = robot.states().tcp_pose.copy()
+    dx = (end[0]-start[0])*1000
+    dy = (end[1]-start[1])*1000
+    dz = (end[2]-start[2])*1000
+    dist = (dx*dx + dy*dy + dz*dz)**0.5
+    return round(dist,2), dist<10.0
+
+def safe_exit():
+    stop_teleop()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, lambda s,f: safe_exit())
+
+def main():
+    global teleop_pid, leader_robot_sn, follower_robot_sn, SUDO_PASSWORD, nTrials, leader_robot, follower_robot
+    args = parse_args()
+    leader_robot_sn = args.leader
+    follower_robot_sn = args.follower
+    SUDO_PASSWORD = args.password
+    nTrials = args.num
+    tests = find_executables()
+    if not tests:
+        print("No test_ executables found."); sys.exit(1)
+    for i,(fn,_) in enumerate(tests): print(f"{i}: {fn}")
+    idx=int(input("Select program index: "))
+    exe_path = tests[idx][1]
+
+    leader = flexivrdk.Robot(args.leader)
+    follower = flexivrdk.Robot(args.follower)
+
+    print("Sync Home Pose..."); sync_home(leader); sync_home(follower)
+    input("Home Pose synced. Press Enter to start Teleop...")
+    start_teleop(exe_path)
+    time.sleep(7)
+
+    results=[]
+    for i in range(args.num):
+        input(f"请将末端移动到测试 Pose 后按 Enter 开始")
+        print(f"第 {i+1} 次测试已开始，请踩住踏板并等待提示。")
+        while True:
+            try:
+                pedal = leader.digital_inputs()[0]
+            except Exception:
+                pedal = 0
+            if pedal == 1:
+                break
+            time.sleep(0.05)
+        print("踏板已踩下，等待运动启动...")
+        dist, success = measure_hover(leader)
+        results.append((dist, success))
+        print(f"Distance: {dist} mm — {'Success' if success else 'Fail'}")
+
+    stop_teleop()
+
+    now=datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_name=f"hover_summary_{now}.csv"
+    with open(csv_name,"w",newline='') as f:
+        w=csv.writer(f)
+        w.writerow(["Test","Distance(mm)","Success"])
+        for i,(d,s) in enumerate(results,1):
+            w.writerow([i,d,"Yes" if s else "No"])
+        avg_dist = round(sum(d for d,_ in results)/len(results),2)
+        success_rate = round(sum(s for _,s in results)/len(results)*100,1)
+        w.writerow([])
+        w.writerow(["Average Distance(mm)",avg_dist])
+        w.writerow(["Success Rate(%)",success_rate])
+
+    print(f"\nSaved results to {csv_name}")
+    print(f"Average Distance: {avg_dist} mm, Success Rate: {success_rate}%")
+    print("Done.")
+
+if __name__=="__main__":
+    main()

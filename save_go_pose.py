@@ -21,7 +21,7 @@ def quaternion_to_euler(qw, qx, qy, qz):
     yaw = math.atan2(t3, t4)
     return [math.degrees(roll), math.degrees(pitch), math.degrees(yaw)]
 
-robot = flexivrdk.Robot('Rizon4s-062304')
+robot = flexivrdk.Robot('Rizon4s-062242')
 mode = flexivrdk.Mode
 filename = "save_pose.csv"
 
@@ -115,6 +115,7 @@ while True:
             time.sleep(1)
         print("Robot homed.")
     elif key == 'q':
+        robot.Stop()
         print("Exiting program.")
         break
     else:

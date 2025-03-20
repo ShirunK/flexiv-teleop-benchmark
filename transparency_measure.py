@@ -9,23 +9,10 @@ transparency_measure.py
    由用户选择后，由程序启动遥操作程序（启动后不在各次测试间重启）。
 2. 测试过程中提示“请操控主手，使末端触碰到平面，并尝试使末端保持10N的压力并维持3秒”，
    系统以一定频率（例如10Hz）读取主侧与从侧末端在 world 坐标下的 Z 方向外力，
-   实时计算透明度指标：
-   $$
-   T = -\frac{F^{\rm master}_z}{F^{\rm slave}_z}
-   $$
-   并以“slave:master”的格式显示（例如“1:0.5”）。当从侧力连续3秒保持在9N到11N之间时，
-   记录该区间数据并计算平均值，作为单次测试的结果。
+   实时计算透明度指标：F = - F_master_z / F_slave_z，其中 F 为透明度，F_master_z 为主侧 Z 方向外力，
+   并以“slave:master”显示,当从侧力连续3秒保持在9N到11N之间时，   记录该区间数据并计算平均值，作为单次测试的结果。
 3. 整个测试过程连续进行 n 次（默认 n=5），每次测试结束后输出该次结果，
    最后输出 n 次测试结果的平均值，并将所有数据和总结保存到 CSV 文件中。
-4. 程序中加入异常处理和 Ctrl+C 捕捉，一旦出错或中断，将停止遥操作程序（包括整个进程树）后退出。
-
-透明度指标定义：
-$$
-T = -\frac{F^{\rm master}_z}{F^{\rm slave}_z}
-$$
-其中 \(F^{\rm master}_z\) 和 \(F^{\rm slave}_z\) 分别为主侧和从侧末端的 Z 方向外力（单位N）。
-
-请确保已正确配置 Flexiv RDK 并连接机器人。
 """
 
 import time
@@ -119,9 +106,6 @@ def stop_teleop():
             print(f"[stop_teleop] pkill error: {e}")
     teleop_pattern = None
 
-
-# =========== 测量透明度 ===========
-
 def measure_transparency_once():
     """
     在循环中以固定频率读取主臂与从臂末端 Z 方向外力，
@@ -200,8 +184,6 @@ def signal_handler(sig, frame):
     safe_exit()
 
 signal.signal(signal.SIGINT, signal_handler)
-
-# =========== 主程序 ===========
 
 def main():
     global teleop_pid, nTests, leader_robot_sn, follower_robot_sn, SUDO_PASSWORD

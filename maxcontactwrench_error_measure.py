@@ -39,10 +39,7 @@ def measure_max_contact_error(leader_robot, follwer_robot, set_value):
       提示用户用主手向下施加大于设定值的力，使从手末端接触外界。
       当检测到主侧 Z 方向外力连续 3 秒大于 set_value 时，
       在该区间内采集从手 Z 方向外力数据，并计算平均值。
-    返回：平均从侧力及误差百分比：
-      $$
-      \text{Error(\%)} = \left|\frac{\text{平均测得值} - \text{设定值}}{\text{设定值}}\right|\times 100\%
-      $$
+    返回：平均从侧力及误差百分比
     """
     print(f"请用主手向下施加大于 {set_value:.1f} N 的力，使从手末端接触外界。")
     valid_start = None

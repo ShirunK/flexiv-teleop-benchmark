@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-save_go_pose_dual.py
+save_go_pose.py
 
 功能：
 1. 通过命令行位置参数获取一个或多个机器人序列号（例如：python save_go_pose_dual.py Rizon4s-123456 Rizon4s-123452）。

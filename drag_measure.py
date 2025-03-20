@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-drag_measure_6dir.py
+drag_measure.py
 
 功能：
 1) 在脚本开始时，列出当前目录可执行的 "test_" 开头文件，让用户选择一个要测试的 Teleop 可执行文件。
@@ -11,13 +11,7 @@ drag_measure_6dir.py
    - (b) 启动Teleop进程 (sudo + Popen)，创建新会话
    - (c) 分段阻尼测量 (末端 5cm~finalDistM, 每5cm一段)
    - (d) 测量完毕后, 首先 killpg(进程组)，然后使用 pkill -f 强制结束剩余进程
-3) 在程序中加入异常处理 & Ctrl+C (SIGINT) 捕捉，一旦出错或中断, 杀掉Teleop进程树，并通过 pkill -f 进一步清理。
-4) 将测量数据与结果写到同目录下的CSV文件。
-5) 此方法相对激进，但能**最大限度**清除 Teleop 及其可能外派的所有子进程。
-
-注意：
-- pkill -f 会匹配所有进程命令行中含 <pattern> 的进程并 kill -9，需谨慎使用。
-- 你可将 pattern 换成更独特的可执行名，避免误杀其它进程。
+3) 将测量数据与结果写到同目录下的CSV文件。
 """
 
 import os
@@ -32,20 +26,16 @@ import argparse
 import flexivrdk
 
 # ========== 全局变量 ==========
-teleop_pid = None            # Teleop 主进程PID
-teleop_pattern = None        # Teleop 可执行文件名(去掉路径)，供 pkill -f
-
-# 机器人序列号
+teleop_pid = None            
+teleop_pattern = None        # 供 pkill -f
 leader_robot_sn   = None
 follower_robot_sn = None
+SUDO_PASSWORD = None
 
-# 末端目标位移 (米)
 finalDistM = 0.30
 startDist  = 0.05
 sample_period = 0.01
 
-# sudo 密码
-SUDO_PASSWORD = None
 
 # =========== 各方向起始关节姿态 (单位:度) ===========
 POSE_X1_START = [-0.7858643304937192, -13.877941212036967, 0.7483301998416312,
@@ -77,7 +67,6 @@ def find_executables_in_current_dir():
     candidates = []
     for f in files:
         if os.path.isfile(f) and os.access(f, os.X_OK):
-            # 只要以 test_ 开头就纳入选择
             if f.startswith("test_"):
                 candidates.append((f, f"./{f}"))
     return candidates
@@ -86,10 +75,11 @@ def find_executables_in_current_dir():
 
 def start_teleop(executable_path):
     """
-    启动Teleop进程，并让它成为session leader (new session)。
+    启动 Teleop 程序，并使其成为新会话的组长。
+    若文件名包含 "high_transparency"，则使用 -l / -r 参数，否则使用 -1 / -2 参数。
+    返回 Teleop 进程的 PID。
     """
     global teleop_pid, teleop_pattern
-
     teleop_pattern = os.path.basename(executable_path)
     if "high_transparency" in teleop_pattern:
         cmd = f"echo {SUDO_PASSWORD} | sudo -S {executable_path} -l {leader_robot_sn} -r {follower_robot_sn}"
@@ -101,10 +91,10 @@ def start_teleop(executable_path):
     time.sleep(2.0)
     return pid
 
-
 def stop_teleop():
     """
-    killpg (SIGTERM+SIGKILL) 结束该进程组
+    结束 Teleop 程序：先通过 killpg(SIGTERM+SIGKILL) 结束进程组，
+    然后使用 pkill -9 -f 以确保所有相关进程被关闭。
     """
     global teleop_pid, teleop_pattern
 
@@ -116,7 +106,6 @@ def stop_teleop():
             pgid = None
 
         if pgid is not None:
-            # 尝试 SIGTERM
             print(f"[stop_teleop] killpg(SIGTERM) pgid={pgid}")
             try:
                 os.killpg(pgid, signal.SIGTERM)
@@ -124,16 +113,14 @@ def stop_teleop():
             except ProcessLookupError:
                 print("[stop_teleop] Group not found, likely ended.")
             else:
-                # 检查是否活着
                 try:
-                    os.killpg(pgid, 0)  # 不发送实际信号，仅测试
+                    os.killpg(pgid, 0)
                     print(f"[stop_teleop] Still alive => killpg(SIGKILL) pgid={pgid}")
                     os.killpg(pgid, signal.SIGKILL)
                 except ProcessLookupError:
                     print("[stop_teleop] Group ended after SIGTERM.")
         teleop_pid = None
 
-    # pkill
     if teleop_pattern:
         print(f"[stop_teleop] pkill -9 -f {teleop_pattern}")
         try:
@@ -142,17 +129,14 @@ def stop_teleop():
             print(f"[stop_teleop] pkill error: {e}")
     teleop_pattern = None
 
-# =========== 同步姿态 ===========
 
 def sync_pose(robot, jpos_deg):
-    mode = flexivrdk.Mode
-    robot.SwitchMode(mode.NRT_PRIMITIVE_EXECUTION)
+    robot.SwitchMode(flexivrdk.Mode.NRT_PRIMITIVE_EXECUTION)
     target = flexivrdk.JPos(jpos_deg, [0,0,0,0,0,0])
     robot.ExecutePrimitive("MoveJ", {"target": target})
     print(f"[SyncPose] Send MoveJ command to {jpos_deg}")
 
 # =========== 分段测量阻尼 ===========
-
 def measure_damping_in_one_direction(robot, dname, dir_vec):
     start_time = time.time()
     data_records = []
@@ -256,15 +240,12 @@ def measure_damping_in_one_direction(robot, dname, dir_vec):
     else:
         B_dir= validSumB/validCount
 
-    # 打印分段
     print(f"  => {dname} {nChunks} chunk(s).")
     for (i, ds, de, avV, avF, bc, nm) in chunk_result_list:
         print(f"     Chunk {i}: [{ds*100:.0f}-{de*100:.0f}cm], N={nm}, V={avV:.4f}, F={avF:.4f}, B={bc:.4f}")
 
     print(f"  ==> {dname} overall B_dir={B_dir:.4f}\n")
     return B_dir, data_records, chunk_result_list
-
-# ======= 异常 / Ctrl+C 处理 =======
 
 def safe_exit():
     stop_teleop()
@@ -276,7 +257,6 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
-# =========== 主程序 ===========
 
 def main():
     global teleop_pid, leader_robot_sn, follower_robot_sn, SUDO_PASSWORD
@@ -290,7 +270,6 @@ def main():
     leader_robot_sn = args.leader
     follower_robot_sn = args.follower
     SUDO_PASSWORD = args.password
-    # 1) 找test_开头可执行文件
     exe_list = find_executables_in_current_dir()
     if not exe_list:
         print("No test_ executables found in current dir.")
@@ -312,13 +291,11 @@ def main():
     chosen_name, exe_path = exe_list[cidx]
     print(f"\n已选择: {chosen_name}\n路径: {exe_path}\n")
 
-    # 2) 连接Robot
     print("连接到 Robot...")
     leader_robot = flexivrdk.Robot(leader_robot_sn)
     follower_robot = flexivrdk.Robot(follower_robot_sn)
-    # robot.enable()  # 如果需要
+    # robot.enable()
 
-    # 打开 CSV
     now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     csv_name = f"damping_data_{now_str}.csv"
     fcsv = open(csv_name, mode="w", newline='', encoding="utf-8")
@@ -337,16 +314,15 @@ def main():
             jpos_deg = dcfg["jpos_start_deg"]
 
             print(f"\n========== 测量方向 {dname} ===========")
-
             # (a) 同步Pose
             input("[STEP]按回车键同步到起始姿态...")
             sync_pose(leader_robot, jpos_deg)
             sync_pose(follower_robot, jpos_deg)
-
             input(f"[STEP]位置就绪后，按回车启动teleop并开始测量 [{dname}]...")
             leader_robot.Stop()
             follower_robot.Stop()
             time.sleep(1.0)
+
             # (b) 启动teleop
             start_teleop(exe_path)
             time.sleep(7.0)
@@ -361,7 +337,7 @@ def main():
             leader_robot.Stop()
             follower_robot.Stop()
 
-            # 写CSV
+            # (e) 写CSV
             writer.writerow([f"Direction={dname}"])
             writer.writerow(["time_s","px","py","pz","vx","vy","vz","fx","fy","fz","dist_abs"])
             for rec in data_recs:
@@ -376,7 +352,6 @@ def main():
             writer.writerow(["B_dir", f"{B_dir:.4f}"])
             writer.writerow([])
 
-        # 汇总
         valid_b = [abs(x) for x in results if x>1e-9]
         if not valid_b:
             print("\n[Warning] 所有方向均无有效数据.")
@@ -399,7 +374,7 @@ def main():
     finally:
         stop_teleop()
         fcsv.close()
-        print(f"数据已写入 {csv_name}，程序结束。")
+        print(f"数据已写入 {csv_name}")
 
 
 if __name__ == "__main__":
